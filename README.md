@@ -1,4 +1,4 @@
-# DeepsProxy (Qwen Edition)
+# QwenProxy
 
 Local proxy server that interfaces with Qwen (chat.qwen.ai) using browser automation via Playwright.  
 Provides an OpenAI-compatible API for chat interactions and tool execution.
