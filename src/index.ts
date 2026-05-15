@@ -15,10 +15,12 @@ import { chatCompletions } from './routes/chat.ts';
 import { loginClick, loginKey, loginPage, loginScreenshot, loginType } from './routes/login.ts';
 import { models } from './routes/models.ts';
 import { responses } from './routes/responses.ts';
+import { registerBuiltinTools } from './tools/builtin.ts';
 import * as dotenv from 'dotenv';
 import { initPlaywright } from './services/playwright.ts';
 
 dotenv.config();
+registerBuiltinTools();
 
 export const app = new Hono();
 

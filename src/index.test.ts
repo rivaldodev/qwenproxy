@@ -7,6 +7,7 @@ process.env.API_KEY = '';
 
 import { app } from './index.ts';
 import { initPlaywright, closePlaywright } from './services/playwright.ts';
+import { registry } from './tools/registry.ts';
 
 test('Health check endpoint returns status ok', async () => {
   const req = new Request('http://localhost/health');
@@ -352,6 +353,71 @@ test('Responses endpoint supports non-v1 alias', async () => {
     const body = await res.json();
     assert.strictEqual(body.output_text, 'alias');
   } finally {
+    globalThis.fetch = originalFetch;
+    await closePlaywright();
+  }
+});
+
+test('Responses endpoint auto-executes registered tools when enabled', async () => {
+  const originalFetch = globalThis.fetch;
+  let qwenCalls = 0;
+
+  registry.register(
+    'test_lookup',
+    'Lookup test information',
+    {
+      type: 'object',
+      properties: {
+        query: { type: 'string' }
+      },
+      required: ['query']
+    },
+    async (args) => `lookup result for ${args.query}`
+  );
+
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/api/v2/chat/completions')) {
+      qwenCalls++;
+      const stream = new ReadableStream({
+        start(c) {
+          if (qwenCalls === 1) {
+            c.enqueue(new TextEncoder().encode('data: {"choices": [{"delta": {"phase": "answer", "content": "<tool_call>{\\"name\\": \\"test_lookup\\", \\"arguments\\": {\\"query\\": \\"abc\\"}}</tool_call>"}}], "usage": {"input_tokens": 10, "output_tokens": 2}}\n\n'));
+          } else {
+            c.enqueue(new TextEncoder().encode('data: {"choices": [{"delta": {"phase": "answer", "content": "Final answer from tool"}}], "usage": {"input_tokens": 11, "output_tokens": 3}}\n\n'));
+          }
+          c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+          c.close();
+        }
+      });
+      return new Response(stream, { status: 200 });
+    }
+    return originalFetch(input);
+  };
+
+  await initPlaywright(false);
+
+  try {
+    const req = new Request('http://localhost/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3.6-plus-no-thinking',
+        auto_execute_tools: true,
+        input: 'Use the lookup tool'
+      })
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+
+    const body = await res.json();
+    assert.strictEqual(body.output_text, 'Final answer from tool');
+    assert.strictEqual(body.usage.input_tokens, 21);
+    assert.strictEqual(body.usage.output_tokens, 5);
+    assert.strictEqual(qwenCalls, 2);
+  } finally {
+    registry.unregister('test_lookup');
     globalThis.fetch = originalFetch;
     await closePlaywright();
   }

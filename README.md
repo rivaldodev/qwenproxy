@@ -10,6 +10,7 @@ Provides an OpenAI-compatible API for chat interactions and tool execution.
 - OpenAI-compatible API endpoints for chat completion
 - Reasoning/Thinking support
 - Tool execution support
+- `/v1/responses` auto-execution loop for server-side tools
 - Persistent browser session with login state
 - Built with Hono and TypeScript
 
@@ -40,10 +41,16 @@ PORT=3000
 API_KEY=your_secret_api_key
 QWEN_EMAIL=your_email@example.com
 QWEN_PASSWORD=your_password
+AUTO_EXECUTE_TOOLS=false
+AUTO_EXECUTE_MAX_TURNS=10
+SEARXNG_SEARCH_URL=http://searxng:8080/search
+SEARXNG_TIMEOUT_MS=15000
 ```
 
 - **API_KEY**: If set, all requests to `/v1/*` must include the header `Authorization: Bearer your_secret_api_key`.
 - **QWEN_EMAIL/PASSWORD**: Required for automated login in Docker or headless environments.
+- **AUTO_EXECUTE_TOOLS**: If `true`, `/v1/responses` executes registered server-side tools automatically.
+- **SEARXNG_SEARCH_URL**: Internal SearXNG endpoint used by the built-in `web_search` tool.
 
 ---
 
@@ -104,6 +111,31 @@ npm test
 OpenAI-compatible endpoint.
 
 **Note**: If `API_KEY` is configured, include the Bearer token in your request headers.
+
+Tool calls returned by this endpoint are not executed by the proxy. Clients should execute
+`tool_calls` themselves, matching OpenAI Chat Completions behavior.
+
+### `POST /v1/responses`
+
+OpenAI-compatible Responses endpoint. It can execute registered server-side tools when
+`auto_execute_tools` is enabled in the JSON body, via `X-Auto-Execute-Tools: true`, or
+globally with `AUTO_EXECUTE_TOOLS=true`.
+
+Example:
+
+```bash
+curl http://localhost:3000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_secret_api_key" \
+  -d '{
+    "model": "qwen3.6-plus-no-thinking",
+    "auto_execute_tools": true,
+    "input": "Pesquise na web por TypeScript e responda com fontes."
+  }'
+```
+
+The built-in `web_search` tool uses SearXNG and requires the proxy to reach
+`SEARXNG_SEARCH_URL`, defaulting to `http://searxng:8080/search`.
 
 #### Models
 - `qwen3.6-plus` (with thinking)
