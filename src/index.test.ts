@@ -272,6 +272,91 @@ test('Chat Completions endpoint returns JSON when stream is false', async () => 
   }
 });
 
+test('Responses endpoint returns OpenAI response object', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/api/v2/chat/completions')) {
+      const stream = new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"choices": [{"delta": {"phase": "answer", "content": "OK"}}], "usage": {"input_tokens": 2, "output_tokens": 1}}\n\n'));
+          c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+          c.close();
+        }
+      });
+      return new Response(stream, { status: 200 });
+    }
+    return originalFetch(input);
+  };
+
+  await initPlaywright(false);
+
+  try {
+    const req = new Request('http://localhost/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3.6-plus',
+        instructions: 'Responda curto.',
+        input: 'Diga OK'
+      })
+    });
+
+    const res = await app.fetch(req);
+
+    assert.strictEqual(res.status, 200);
+    const body = await res.json();
+    assert.strictEqual(body.object, 'response');
+    assert.strictEqual(body.status, 'completed');
+    assert.strictEqual(body.output_text, 'OK');
+    assert.strictEqual(body.output[0].content[0].text, 'OK');
+    assert.strictEqual(body.usage.input_tokens, 2);
+    assert.strictEqual(body.usage.output_tokens, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await closePlaywright();
+  }
+});
+
+test('Responses endpoint supports non-v1 alias', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/api/v2/chat/completions')) {
+      const stream = new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"choices": [{"delta": {"phase": "answer", "content": "alias"}}]}\n\n'));
+          c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+          c.close();
+        }
+      });
+      return new Response(stream, { status: 200 });
+    }
+    return originalFetch(input);
+  };
+
+  await initPlaywright(false);
+
+  try {
+    const req = new Request('http://localhost/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3.6-plus',
+        input: [{ role: 'user', content: 'test alias' }]
+      })
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+    const body = await res.json();
+    assert.strictEqual(body.output_text, 'alias');
+  } finally {
+    globalThis.fetch = originalFetch;
+    await closePlaywright();
+  }
+});
+
 test('API Key protection', async () => {
   const originalApiKey = process.env.API_KEY;
   process.env.API_KEY = 'test-api-key';

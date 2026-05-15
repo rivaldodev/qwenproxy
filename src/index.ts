@@ -14,6 +14,7 @@ import { cors } from 'hono/cors';
 import { chatCompletions } from './routes/chat.ts';
 import { loginClick, loginKey, loginPage, loginScreenshot, loginType } from './routes/login.ts';
 import { models } from './routes/models.ts';
+import { responses } from './routes/responses.ts';
 import * as dotenv from 'dotenv';
 import { initPlaywright } from './services/playwright.ts';
 
@@ -61,6 +62,8 @@ app.post('/login/key', loginKey);
 // OpenAI compatible routes
 app.post('/v1/chat/completions', chatCompletions);
 app.post('/chat/completions', chatCompletions);
+app.post('/v1/responses', responses);
+app.post('/responses', responses);
 app.route('/v1/models', models);
 app.route('/models', models);
 
