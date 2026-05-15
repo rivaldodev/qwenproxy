@@ -186,6 +186,54 @@ test('Chat Completions endpoint with qwen3.6-plus (thinking enabled)', async () 
   }
 });
 
+test('Chat Completions endpoint returns JSON when stream is false', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/api/v2/chat/completions')) {
+      const stream = new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"choices": [{"delta": {"phase": "answer", "content": "Ola"}}], "usage": {"input_tokens": 3, "output_tokens": 1}}\n\n'));
+          c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+          c.close();
+        }
+      });
+      return new Response(stream, { status: 200 });
+    }
+    return originalFetch(input);
+  };
+
+  await initPlaywright(false);
+
+  try {
+    const req = new Request('http://localhost/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3.6-plus',
+        messages: [{ role: 'user', content: 'Ola' }],
+        stream: false
+      })
+    });
+
+    const res = await app.fetch(req);
+
+    assert.strictEqual(res.status, 200);
+    assert.match(res.headers.get('Content-Type') || '', /application\/json/);
+
+    const body = await res.json();
+    assert.strictEqual(body.object, 'chat.completion');
+    assert.strictEqual(body.choices[0].message.role, 'assistant');
+    assert.strictEqual(body.choices[0].message.content, 'Ola');
+    assert.strictEqual(body.choices[0].finish_reason, 'stop');
+    assert.strictEqual(body.usage.prompt_tokens, 3);
+    assert.strictEqual(body.usage.completion_tokens, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await closePlaywright();
+  }
+});
+
 test('API Key protection', async () => {
   const originalApiKey = process.env.API_KEY;
   process.env.API_KEY = 'test-api-key';
@@ -203,7 +251,15 @@ test('API Key protection', async () => {
     const res2 = await app.fetch(req2);
     assert.strictEqual(res2.status, 401, 'Should return 401 Unauthorized with wrong API Key');
 
-    // 3. Test request with correct API Key
+    // 3. Test request with malformed Authorization header. Hono's bearerAuth used
+    // to return 400 Bad Request here, but the proxy should consistently return 401.
+    const reqMalformed = new Request('http://localhost/v1/models', {
+      headers: { 'Authorization': 'test-api-key' }
+    });
+    const resMalformed = await app.fetch(reqMalformed);
+    assert.strictEqual(resMalformed.status, 401, 'Should return 401 Unauthorized with malformed Authorization header');
+
+    // 4. Test request with correct API Key
     // Mock fetch for models list
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response(JSON.stringify({ data: [] }), { status: 200 });
@@ -214,6 +270,12 @@ test('API Key protection', async () => {
       });
       const res3 = await app.fetch(req3);
       assert.strictEqual(res3.status, 200, 'Should return 200 OK with correct API Key');
+
+      const req4 = new Request('http://localhost/v1/models', {
+        headers: { 'X-API-Key': 'test-api-key' }
+      });
+      const res4 = await app.fetch(req4);
+      assert.strictEqual(res4.status, 200, 'Should return 200 OK with X-API-Key');
     } finally {
       globalThis.fetch = originalFetch;
     }

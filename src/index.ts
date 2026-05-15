@@ -11,7 +11,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { bearerAuth } from 'hono/bearer-auth';
 import { chatCompletions } from './routes/chat.ts';
 import { loginClick, loginKey, loginPage, loginScreenshot, loginType } from './routes/login.ts';
 import { fetchQwenModels } from './services/qwen.ts';
@@ -30,7 +29,19 @@ app.use('/v1/*', async (c, next) => {
   if (!apiKey) {
     return await next();
   }
-  return bearerAuth({ token: apiKey })(c, next);
+
+  const authorization = c.req.header('authorization') || '';
+  const bearerKey = authorization.toLowerCase().startsWith('bearer ')
+    ? authorization.slice(7).trim()
+    : '';
+  const headerKey = c.req.header('x-api-key') || '';
+  const queryKey = new URL(c.req.url).searchParams.get('key') || '';
+
+  if (bearerKey === apiKey || headerKey === apiKey || queryKey === apiKey) {
+    return await next();
+  }
+
+  return c.text('Unauthorized', 401);
 });
 
 // Basic health check

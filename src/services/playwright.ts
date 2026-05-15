@@ -315,8 +315,6 @@ async function _getQwenHeadersInternal(forceNew = false): Promise<{ headers: Rec
 
     console.log('[Playwright] Setting up route interception...');
     const routeHandler = async (route: any, request: any) => {
-      clearTimeout(timeout);
-      
       const reqHeaders = request.headers();
       let uiSessionId = '';
       let uiParentMessageId: string | null = null;
@@ -352,6 +350,7 @@ async function _getQwenHeadersInternal(forceNew = false): Promise<{ headers: Rec
         return;
       }
 
+      clearTimeout(timeout);
       console.log('[Playwright] Successfully intercepted headers.');
       currentHeaders = extractedHeaders;
       cachedQwenHeaders = { headers: extractedHeaders, chatSessionId: uiSessionId, parentMessageId: uiParentMessageId };

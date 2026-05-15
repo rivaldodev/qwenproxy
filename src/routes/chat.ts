@@ -122,11 +122,120 @@ export async function chatCompletions(c: Context) {
       }
     }
 
+    const completionId = 'chatcmpl-' + uuidv4();
+
+    if (!isStream) {
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      const toolParser = new StreamingToolParser();
+      let buffer = '';
+      let content = '';
+      let reasoningContent = '';
+      let lastFullContent = '';
+      let currentThoughtIndex = 0;
+      let completionTokens = 0;
+      let promptTokens = Math.ceil(finalPrompt.length / 3.5);
+      const toolCalls: any[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+          const dataStr = trimmed.slice(6);
+          if (dataStr === '[DONE]') continue;
+
+          try {
+            const chunk = JSON.parse(dataStr);
+
+            if (chunk['response.created'] && chunk['response.created'].response_id) {
+              updateSessionParent(uiSessionId, chunk['response.created'].response_id);
+            } else if (chunk.response_id) {
+              updateSessionParent(uiSessionId, chunk.response_id);
+            }
+
+            if (chunk.usage) {
+              if (chunk.usage.output_tokens) completionTokens = chunk.usage.output_tokens;
+              if (chunk.usage.input_tokens) promptTokens = chunk.usage.input_tokens;
+            }
+
+            if (!chunk.choices?.[0]?.delta) continue;
+
+            const delta = chunk.choices[0].delta;
+            if (delta.phase === 'thinking_summary') {
+              const thoughts = delta.extra?.summary_thought?.content;
+              if (Array.isArray(thoughts) && thoughts.length > currentThoughtIndex) {
+                reasoningContent += thoughts.slice(currentThoughtIndex).join('\n');
+                currentThoughtIndex = thoughts.length;
+              }
+            } else if (delta.phase === 'answer' && delta.content !== undefined) {
+              const nextContent = delta.content || '';
+              const deltaText = getIncrementalDelta(lastFullContent, nextContent);
+              if (deltaText && deltaText !== 'FINISHED') {
+                lastFullContent += deltaText;
+                const parsed = toolParser.feed(deltaText);
+                content += parsed.text;
+                toolCalls.push(...parsed.toolCalls);
+              }
+            }
+          } catch (e) {
+            // parse error, ignore partial chunk
+          }
+        }
+      }
+
+      const flushed = toolParser.flush();
+      content += flushed.text;
+      toolCalls.push(...flushed.toolCalls);
+      const emittedToolCount = toolParser.getEmittedToolCallCount();
+      const message: any = { role: 'assistant', content };
+
+      if (reasoningContent) {
+        message.reasoning_content = reasoningContent;
+      }
+
+      if (toolCalls.length > 0) {
+        message.tool_calls = toolCalls.map((tc, index) => ({
+          id: tc.id,
+          type: 'function',
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments)
+          },
+          index
+        }));
+      }
+
+      return c.json({
+        id: completionId,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{
+          index: 0,
+          message,
+          logprobs: null,
+          finish_reason: emittedToolCount > 0 ? 'tool_calls' : 'stop'
+        }],
+        usage: {
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: promptTokens + completionTokens,
+          prompt_tokens_details: { cached_tokens: 0 }
+        }
+      });
+    }
+
     c.header('Content-Type', 'text/event-stream');
     c.header('Cache-Control', 'no-cache');
     c.header('Connection', 'keep-alive');
-
-    const completionId = 'chatcmpl-' + uuidv4();
 
     return honoStream(c, async (streamWriter: any) => {
       const writeEvent = async (data: any) => {
