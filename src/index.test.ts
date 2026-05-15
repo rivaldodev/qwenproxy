@@ -95,6 +95,44 @@ test('Models endpoint returns qwen3.6-plus and qwen3.6-plus-no-thinking', async 
   }
 });
 
+test('Models endpoint supports model lookup and non-v1 alias', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/api/models')) {
+      return new Response(JSON.stringify({ data: [{ id: 'qwen3.6-plus', owned_by: 'qwen' }] }), { status: 200 });
+    }
+    return originalFetch(input);
+  };
+
+  try {
+    const list = await app.fetch(new Request('http://localhost/models'));
+    assert.strictEqual(list.status, 200);
+    const listBody = await list.json();
+    assert.ok(listBody.data.some((m: any) => m.id === 'qwen3.6-plus'));
+
+    const byId = await app.fetch(new Request('http://localhost/v1/models/qwen3.6-plus'));
+    assert.strictEqual(byId.status, 200);
+    const model = await byId.json();
+    assert.strictEqual(model.id, 'qwen3.6-plus');
+    assert.strictEqual(model.object, 'model');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Unknown routes return OpenAI-compatible JSON errors', async () => {
+  const res = await app.fetch(new Request('http://localhost/v1/unknown'));
+
+  assert.strictEqual(res.status, 404);
+  assert.match(res.headers.get('Content-Type') || '', /application\/json/);
+
+  const body = await res.json();
+  assert.strictEqual(body.error.type, 'invalid_request_error');
+  assert.strictEqual(body.error.code, 'route_not_found');
+  assert.match(body.error.message, /Route not found: GET \/v1\/unknown/);
+});
+
 test('Chat Completions endpoint with qwen3.6-plus (thinking enabled)', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: any) => {

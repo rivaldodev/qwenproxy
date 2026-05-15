@@ -13,7 +13,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { chatCompletions } from './routes/chat.ts';
 import { loginClick, loginKey, loginPage, loginScreenshot, loginType } from './routes/login.ts';
-import { fetchQwenModels } from './services/qwen.ts';
+import { models } from './routes/models.ts';
 import * as dotenv from 'dotenv';
 import { initPlaywright } from './services/playwright.ts';
 
@@ -24,7 +24,7 @@ export const app = new Hono();
 app.use('*', cors());
 
 // API Key protection middleware
-app.use('/v1/*', async (c, next) => {
+async function apiKeyAuth(c: any, next: any) {
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
     return await next();
@@ -42,7 +42,11 @@ app.use('/v1/*', async (c, next) => {
   }
 
   return c.text('Unauthorized', 401);
-});
+}
+
+app.use('/v1/*', apiKeyAuth);
+app.use('/models', apiKeyAuth);
+app.use('/models/*', apiKeyAuth);
 
 // Basic health check
 app.get('/health', (c) => c.json({ status: 'ok' }));
@@ -56,17 +60,18 @@ app.post('/login/key', loginKey);
 
 // OpenAI compatible routes
 app.post('/v1/chat/completions', chatCompletions);
+app.post('/chat/completions', chatCompletions);
+app.route('/v1/models', models);
+app.route('/models', models);
 
-app.get('/v1/models', async (c) => {
-  try {
-    const models = await fetchQwenModels();
-    return c.json({
-      object: 'list',
-      data: models
-    });
-  } catch (err: any) {
-    return c.json({ error: { message: err.message } }, 500);
-  }
+app.notFound((c) => {
+  return c.json({
+    error: {
+      message: `Route not found: ${c.req.method} ${new URL(c.req.url).pathname}`,
+      type: 'invalid_request_error',
+      code: 'route_not_found'
+    }
+  }, 404);
 });
 
 // Initialize playwright when server starts
@@ -75,7 +80,7 @@ import { fileURLToPath } from 'url';
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   initPlaywright().then(() => {
     console.log('Playwright initialized.');
-    const port = process.env.PORT ? parseInt(process.env.PORT) : 8080;
+    const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
     console.log(`Server is running on port ${port}`);
 
     serve({
