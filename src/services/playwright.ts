@@ -18,9 +18,119 @@ let currentHeaders: Record<string, string> = {};
 let cachedQwenHeaders: { headers: Record<string, string>, chatSessionId: string, parentMessageId: string | null } | null = null;
 let lastHeadersTime = 0;
 const HEADERS_TTL = 10 * 60 * 1000; // 10 minutes
+const MOCK_LOGIN_SCREENSHOT = Uint8Array.from(Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO1NqGQAAAAASUVORK5CYII=',
+  'base64'
+));
+
+const LOGIN_KEY_ALLOWLIST = new Set([
+  'Enter',
+  'Tab',
+  'Escape',
+  'Backspace',
+  'Delete',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight'
+]);
 
 // Lock to prevent concurrent UI interactions
 let uiLock: Promise<void> = Promise.resolve();
+
+export async function withPlaywrightUiLock<T>(task: () => Promise<T>): Promise<T> {
+  const release = await new Promise<() => void>(resolve => {
+    uiLock = uiLock.then(() => new Promise<void>(innerResolve => {
+      resolve(innerResolve);
+    }));
+  });
+
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
+
+export async function ensureQwenLoginPage(headless = true): Promise<Page | null> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return null;
+  }
+
+  await initPlaywright(headless);
+
+  if (!activePage) {
+    throw new Error('Playwright not initialized');
+  }
+
+  const currentUrl = activePage.url();
+  if (!currentUrl.includes('chat.qwen.ai')) {
+    await activePage.goto('https://chat.qwen.ai/auth', { waitUntil: 'domcontentloaded' });
+  }
+
+  return activePage;
+}
+
+export async function captureQwenLoginScreenshot(): Promise<Uint8Array> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return MOCK_LOGIN_SCREENSHOT;
+  }
+
+  if (!activePage) {
+    throw new Error('Playwright not initialized');
+  }
+
+  const screenshot = await activePage.screenshot({ type: 'png', fullPage: false });
+  return screenshot instanceof Uint8Array ? screenshot : new Uint8Array(screenshot);
+}
+
+export async function clickQwenLoginPage(x: number, y: number): Promise<void> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return;
+  }
+
+  if (!activePage) {
+    throw new Error('Playwright not initialized');
+  }
+
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new Error('Invalid coordinates');
+  }
+
+  await activePage.mouse.click(x, y);
+}
+
+export async function typeQwenLoginText(text: string): Promise<void> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return;
+  }
+
+  if (!activePage) {
+    throw new Error('Playwright not initialized');
+  }
+
+  if (typeof text !== 'string' || !text.length) {
+    return;
+  }
+
+  await activePage.keyboard.insertText(text);
+}
+
+export async function pressQwenLoginKey(key: string): Promise<void> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return;
+  }
+
+  if (!activePage) {
+    throw new Error('Playwright not initialized');
+  }
+
+  if (!LOGIN_KEY_ALLOWLIST.has(key)) {
+    throw new Error('Invalid key');
+  }
+
+  await activePage.keyboard.press(key);
+}
 
 export async function getCookies(): Promise<string> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return 'token=mock';
@@ -116,18 +226,9 @@ export async function loginToQwen(email: string, password: string): Promise<bool
  * Ensures the session is valid and extracts headers, PoW, and session ID.
  */
 export async function getQwenHeaders(forceNew = false): Promise<{ headers: Record<string, string>, chatSessionId: string, parentMessageId: string | null }> {
-  // Use a lock to ensure only one request uses the UI at a time
-  const release = await new Promise<() => void>(resolve => {
-    uiLock = uiLock.then(() => new Promise<void>(innerResolve => {
-      resolve(innerResolve);
-    }));
-  });
-
-  try {
+  return await withPlaywrightUiLock(async () => {
     return await _getQwenHeadersInternal(forceNew);
-  } finally {
-    release();
-  }
+  });
 }
 
 async function _getQwenHeadersInternal(forceNew = false): Promise<{ headers: Record<string, string>, chatSessionId: string, parentMessageId: string | null }> {

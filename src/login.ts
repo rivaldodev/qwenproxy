@@ -8,10 +8,27 @@
  * Modified By: Pedro Farias
  */
 
+import { fileURLToPath } from 'url';
 import { initPlaywright, closePlaywright, activePage, loginToQwen } from './services/playwright.ts';
 import * as dotenv from 'dotenv';
 
 dotenv.config();
+
+export async function runHeadlessLogin(email?: string, password?: string): Promise<boolean> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return true;
+  }
+
+  const resolvedEmail = email || process.env.QWEN_EMAIL;
+  const resolvedPassword = password || process.env.QWEN_PASSWORD;
+
+  if (!resolvedEmail || !resolvedPassword) {
+    throw new Error('QWEN_EMAIL and QWEN_PASSWORD are required for headless login');
+  }
+
+  await initPlaywright(true);
+  return await loginToQwen(resolvedEmail, resolvedPassword);
+}
 
 async function main() {
   const email = process.env.QWEN_EMAIL;
@@ -19,8 +36,7 @@ async function main() {
 
   if (email && password) {
     console.log('[Login] Credentials found in .env. Attempting automated API login...');
-    await initPlaywright(true); // Can be headless
-    const success = await loginToQwen(email, password);
+    const success = await runHeadlessLogin(email, password);
     if (success) {
       console.log('[Login] Automated login successful! Session saved.');
       await closePlaywright();
@@ -50,4 +66,6 @@ async function main() {
   });
 }
 
-main();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}

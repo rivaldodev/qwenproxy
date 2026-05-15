@@ -13,6 +13,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { bearerAuth } from 'hono/bearer-auth';
 import { chatCompletions } from './routes/chat.ts';
+import { loginClick, loginKey, loginPage, loginScreenshot, loginType } from './routes/login.ts';
 import { fetchQwenModels } from './services/qwen.ts';
 import * as dotenv from 'dotenv';
 import { initPlaywright } from './services/playwright.ts';
@@ -35,6 +36,13 @@ app.use('/v1/*', async (c, next) => {
 // Basic health check
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
+// Web login helper for Coolify/VPS environments
+app.get('/login', loginPage);
+app.get('/login/screenshot', loginScreenshot);
+app.post('/login/click', loginClick);
+app.post('/login/type', loginType);
+app.post('/login/key', loginKey);
+
 // OpenAI compatible routes
 app.post('/v1/chat/completions', chatCompletions);
 
@@ -56,12 +64,13 @@ import { fileURLToPath } from 'url';
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   initPlaywright().then(() => {
     console.log('Playwright initialized.');
-    const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+    const port = process.env.PORT ? parseInt(process.env.PORT) : 8080;
     console.log(`Server is running on port ${port}`);
 
     serve({
       fetch: app.fetch,
-      port
+      port,
+      hostname: '0.0.0.0'
     });
   }).catch((err: any) => {
     console.error('Failed to initialize playwright:', err);

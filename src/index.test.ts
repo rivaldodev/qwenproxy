@@ -18,6 +18,57 @@ test('Health check endpoint returns status ok', async () => {
   assert.deepStrictEqual(body, { status: 'ok' });
 });
 
+test('Login page renders a browser form', async () => {
+  const req = new Request('http://localhost/login');
+  const res = await app.fetch(req);
+
+  assert.strictEqual(res.status, 200);
+  const body = await res.text();
+  assert.match(body, /QwenProxy Login/);
+  assert.match(body, /Sessão remota/);
+  assert.match(body, /Controles/);
+});
+
+test('Login screenshot endpoint returns a PNG image', async () => {
+  const req = new Request('http://localhost/login/screenshot');
+  const res = await app.fetch(req);
+
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.headers.get('Content-Type'), 'image/png');
+
+  const body = await res.arrayBuffer();
+  assert.ok(body.byteLength > 0);
+});
+
+test('Login route respects API key protection', async () => {
+  const originalApiKey = process.env.API_KEY;
+  process.env.API_KEY = 'test-login-key';
+
+  try {
+    const unauthorized = await app.fetch(new Request('http://localhost/login'));
+    assert.strictEqual(unauthorized.status, 401);
+
+    const authorized = await app.fetch(new Request('http://localhost/login?key=test-login-key'));
+    assert.strictEqual(authorized.status, 200);
+  } finally {
+    process.env.API_KEY = originalApiKey;
+  }
+});
+
+test('Login click endpoint accepts coordinates', async () => {
+  const req = new Request('http://localhost/login/click', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x: 100, y: 200 })
+  });
+
+  const res = await app.fetch(req);
+
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.deepStrictEqual(body, { ok: true });
+});
+
 test('Models endpoint returns qwen3.6-plus and qwen3.6-plus-no-thinking', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: any) => {

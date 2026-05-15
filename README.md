@@ -56,7 +56,14 @@ QWEN_PASSWORD=your_password
    docker-compose up -d
    ```
 
-The server will be available at `http://localhost:3000`.
+The server will be available at `http://localhost:8080`.
+
+### Coolify
+
+This repository includes a compose file prepared to join the Coolify network.
+The app exposes port `8080` internally and also serves a remote login controller at `/login`.
+
+Use `/login` to open the Playwright session, inspect screenshots and send clicks/keys when the VPS cannot run an interactive browser.
 
 ### Local Execution
 
@@ -66,7 +73,7 @@ If you don't provide credentials in `.env`, you must log in manually once:
 ```bash
 npm run login
 ```
-This will open a browser window. Log in and then close it.
+This will open a browser window locally. In Coolify/VPS deployments, use `GET /login?key=...` instead.
 
 #### Start the Server
 
