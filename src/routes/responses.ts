@@ -16,8 +16,12 @@ type ResponseInputPart = {
 };
 
 type ResponseInputMessage = {
+  type?: string;
   role?: string;
   content?: string | ResponseInputPart[] | Array<{ type?: string; text?: string }>;
+  output?: string;
+  call_id?: string;
+  arguments?: string;
   tool_calls?: any[];
   tool_call_id?: string;
   name?: string;
@@ -65,7 +69,29 @@ function inputToMessages(input: unknown, instructions?: string): ResponseInputMe
     messages.push({ role: 'user', content: input });
   } else if (Array.isArray(input)) {
     for (const item of input as ResponseInputMessage[]) {
-      messages.push({ ...item, role: item.role || 'user' });
+      if (item.type === 'function_call_output') {
+        messages.push({
+          role: 'tool',
+          tool_call_id: item.call_id,
+          name: item.call_id,
+          content: item.output || contentToText(item.content)
+        });
+      } else if (item.type === 'function_call') {
+        messages.push({
+          role: 'assistant',
+          content: '',
+          tool_calls: [{
+            id: item.call_id || `call_${uuidv4()}`,
+            type: 'function',
+            function: {
+              name: item.name,
+              arguments: item.arguments || '{}'
+            }
+          }]
+        });
+      } else {
+        messages.push({ ...item, role: item.role || 'user' });
+      }
     }
   } else if (input) {
     messages.push({ role: 'user', content: contentToText(input) });
@@ -158,15 +184,18 @@ function extractTextFromQwenChunk(
   return '';
 }
 
-function responsePayload(id: string, model: string, text: string, usage: any) {
+function responsePayload(
+  id: string,
+  model: string,
+  text: string,
+  usage: any,
+  toolCalls: ParsedToolCall[] = []
+) {
   const createdAt = Math.floor(Date.now() / 1000);
-  return {
-    id,
-    object: 'response',
-    created_at: createdAt,
-    status: 'completed',
-    model,
-    output: [{
+  const output: any[] = [];
+
+  if (text || toolCalls.length === 0) {
+    output.push({
       id: `msg_${uuidv4()}`,
       type: 'message',
       status: 'completed',
@@ -176,10 +205,101 @@ function responsePayload(id: string, model: string, text: string, usage: any) {
         text,
         annotations: []
       }]
-    }],
+    });
+  }
+
+  for (const toolCall of toolCalls) {
+    output.push({
+      id: `fc_${uuidv4()}`,
+      type: 'function_call',
+      status: 'completed',
+      call_id: toolCall.id,
+      name: toolCall.name,
+      arguments: JSON.stringify(toolCall.arguments)
+    });
+  }
+
+  return {
+    id,
+    object: 'response',
+    created_at: createdAt,
+    status: 'completed',
+    model,
+    output,
     output_text: text,
     usage
   };
+}
+
+async function writeResponseStream(
+  c: Context,
+  responseId: string,
+  model: string,
+  text: string,
+  usage: any,
+  toolCalls: ParsedToolCall[] = []
+) {
+  c.header('Content-Type', 'text/event-stream');
+  c.header('Cache-Control', 'no-cache');
+  c.header('Connection', 'keep-alive');
+
+  return honoStream(c, async (streamWriter: any) => {
+    const writeEvent = async (event: string, data: any) => {
+      await streamWriter.write(`event: ${event}\n`);
+      await streamWriter.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    await writeEvent('response.created', {
+      id: responseId,
+      object: 'response',
+      created_at: Math.floor(Date.now() / 1000),
+      status: 'in_progress',
+      model
+    });
+
+    if (text) {
+      await writeEvent('response.output_text.delta', {
+        response_id: responseId,
+        output_index: 0,
+        content_index: 0,
+        delta: text
+      });
+    }
+
+    const textOffset = text ? 1 : 0;
+    for (let index = 0; index < toolCalls.length; index++) {
+      const toolCall = toolCalls[index];
+      const outputIndex = textOffset + index;
+      const item = {
+        id: `fc_${uuidv4()}`,
+        type: 'function_call',
+        status: 'completed',
+        call_id: toolCall.id,
+        name: toolCall.name,
+        arguments: JSON.stringify(toolCall.arguments)
+      };
+
+      await writeEvent('response.output_item.added', {
+        response_id: responseId,
+        output_index: outputIndex,
+        item
+      });
+      await writeEvent('response.function_call_arguments.done', {
+        response_id: responseId,
+        output_index: outputIndex,
+        item_id: item.id,
+        arguments: item.arguments
+      });
+      await writeEvent('response.output_item.done', {
+        response_id: responseId,
+        output_index: outputIndex,
+        item
+      });
+    }
+
+    await writeEvent('response.completed', responsePayload(responseId, model, text, usage, toolCalls));
+    await streamWriter.write('data: [DONE]\n\n');
+  });
 }
 
 function isAutoExecuteEnabled(c: Context, body: any): boolean {
@@ -346,7 +466,8 @@ export async function responses(c: Context) {
     const model = body.model || 'qwen3.6-plus';
     const isStream = body.stream ?? false;
     const messages = inputToMessages(body.input, body.instructions);
-    const prompt = messagesToPrompt(messages, normalizePromptTools(body.tools));
+    const promptTools = normalizePromptTools(body.tools);
+    const prompt = messagesToPrompt(messages, promptTools);
     const enableThinking = !model.includes('no-thinking');
     const responseId = `resp_${uuidv4()}`;
     const autoExecute = isAutoExecuteEnabled(c, body);
@@ -355,39 +476,21 @@ export async function responses(c: Context) {
       const { text, usage } = await runAutoExecuteResponses(messages, model, enableThinking);
 
       if (isStream) {
-        c.header('Content-Type', 'text/event-stream');
-        c.header('Cache-Control', 'no-cache');
-        c.header('Connection', 'keep-alive');
-
-        return honoStream(c, async (streamWriter: any) => {
-          const writeEvent = async (event: string, data: any) => {
-            await streamWriter.write(`event: ${event}\n`);
-            await streamWriter.write(`data: ${JSON.stringify(data)}\n\n`);
-          };
-
-          await writeEvent('response.created', {
-            id: responseId,
-            object: 'response',
-            created_at: Math.floor(Date.now() / 1000),
-            status: 'in_progress',
-            model
-          });
-
-          if (text) {
-            await writeEvent('response.output_text.delta', {
-              response_id: responseId,
-              output_index: 0,
-              content_index: 0,
-              delta: text
-            });
-          }
-
-          await writeEvent('response.completed', responsePayload(responseId, model, text, usage));
-          await streamWriter.write('data: [DONE]\n\n');
-        });
+        return writeResponseStream(c, responseId, model, text, usage);
       }
 
       return c.json(responsePayload(responseId, model, text, usage));
+    }
+
+    if (promptTools.length > 0) {
+      const completion = await collectQwenCompletion(prompt, enableThinking, model);
+      const text = normalizeAssistantText(completion.content);
+
+      if (isStream) {
+        return writeResponseStream(c, responseId, model, text, completion.usage, completion.toolCalls);
+      }
+
+      return c.json(responsePayload(responseId, model, text, completion.usage, completion.toolCalls));
     }
 
     const result = await createQwenStream(prompt, enableThinking, model, null);

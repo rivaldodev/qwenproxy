@@ -358,6 +358,62 @@ test('Responses endpoint supports non-v1 alias', async () => {
   }
 });
 
+test('Responses endpoint returns function_call output for client-executed tools', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/api/v2/chat/completions')) {
+      const stream = new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"choices": [{"delta": {"phase": "answer", "content": "<tool_call>{\\"name\\": \\"lookup\\", \\"arguments\\": {\\"query\\": \\"abc\\"}}</tool_call>"}}], "usage": {"input_tokens": 6, "output_tokens": 2}}\n\n'));
+          c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+          c.close();
+        }
+      });
+      return new Response(stream, { status: 200 });
+    }
+    return originalFetch(input);
+  };
+
+  await initPlaywright(false);
+
+  try {
+    const req = new Request('http://localhost/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3.6-plus-no-thinking',
+        input: 'Use lookup',
+        tools: [{
+          type: 'function',
+          name: 'lookup',
+          description: 'Lookup data',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' }
+            },
+            required: ['query']
+          }
+        }]
+      })
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+
+    const body = await res.json();
+    assert.strictEqual(body.output_text, '');
+    assert.strictEqual(body.output.length, 1);
+    assert.strictEqual(body.output[0].type, 'function_call');
+    assert.strictEqual(body.output[0].name, 'lookup');
+    assert.deepStrictEqual(JSON.parse(body.output[0].arguments), { query: 'abc' });
+  } finally {
+    globalThis.fetch = originalFetch;
+    await closePlaywright();
+  }
+});
+
 test('Responses endpoint auto-executes registered tools when enabled', async () => {
   const originalFetch = globalThis.fetch;
   let qwenCalls = 0;
