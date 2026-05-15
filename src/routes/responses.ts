@@ -37,6 +37,29 @@ type QwenCompletion = {
   };
 };
 
+type StoredResponseState = {
+  messages: ResponseInputMessage[];
+  tools: PromptToolDefinition[];
+};
+
+const responseStates: Record<string, StoredResponseState> = (globalThis as any)._responseStates || {};
+(globalThis as any)._responseStates = responseStates;
+
+function cloneMessages(messages: ResponseInputMessage[]): ResponseInputMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    content: Array.isArray(message.content)
+      ? message.content.map((part: any) => ({ ...part }))
+      : message.content,
+    tool_calls: Array.isArray(message.tool_calls)
+      ? message.tool_calls.map((toolCall: any) => ({
+          ...toolCall,
+          function: toolCall.function ? { ...toolCall.function } : toolCall.function
+        }))
+      : message.tool_calls
+  }));
+}
+
 function contentToText(content: unknown): string {
   if (typeof content === 'string') {
     return content;
@@ -100,6 +123,27 @@ function inputToMessages(input: unknown, instructions?: string): ResponseInputMe
   return messages;
 }
 
+function resolveRequestState(body: any): {
+  messages: ResponseInputMessage[];
+  tools: PromptToolDefinition[];
+} {
+  const previousId = typeof body.previous_response_id === 'string'
+    ? body.previous_response_id
+    : '';
+  const previous = previousId ? responseStates[previousId] : undefined;
+  const currentMessages = inputToMessages(body.input, previous ? undefined : body.instructions);
+  const bodyTools = normalizePromptTools(body.tools);
+
+  return {
+    messages: previous
+      ? [...cloneMessages(previous.messages), ...currentMessages]
+      : currentMessages,
+    tools: bodyTools.length > 0
+      ? bodyTools
+      : previous?.tools || []
+  };
+}
+
 function toolsInstructions(tools: PromptToolDefinition[]): string {
   if (tools.length === 0) return '';
 
@@ -115,9 +159,10 @@ To use a tool, output JSON wrapped exactly in these tags:
 
 RULES:
 1. Use JSON only inside <tool_call> blocks.
-2. If you need a tool, output only <tool_call> blocks and wait for tool results.
-3. After tool results are provided, write the final answer as normal user-facing text, not as JSON.
-4. Do not prefix the final answer with SEARCHING, JSON, or status labels.
+2. If you need one or more tools, output all needed <tool_call> blocks consecutively and wait for tool results.
+3. You may call multiple tools in the same response when the user request requires multiple independent actions.
+4. After tool results are provided, write the final answer as normal user-facing text, not as JSON.
+5. Do not prefix the final answer with SEARCHING, JSON, or status labels.
 `;
 }
 
@@ -465,8 +510,7 @@ export async function responses(c: Context) {
     const body = await c.req.json();
     const model = body.model || 'qwen3.6-plus';
     const isStream = body.stream ?? false;
-    const messages = inputToMessages(body.input, body.instructions);
-    const promptTools = normalizePromptTools(body.tools);
+    const { messages, tools: promptTools } = resolveRequestState(body);
     const prompt = messagesToPrompt(messages, promptTools);
     const enableThinking = !model.includes('no-thinking');
     const responseId = `resp_${uuidv4()}`;
@@ -485,6 +529,12 @@ export async function responses(c: Context) {
     if (promptTools.length > 0) {
       const completion = await collectQwenCompletion(prompt, enableThinking, model);
       const text = normalizeAssistantText(completion.content);
+      responseStates[responseId] = {
+        messages: completion.toolCalls.length > 0
+          ? [...cloneMessages(messages), assistantToolMessage(completion.content, completion.toolCalls)]
+          : [...cloneMessages(messages), { role: 'assistant', content: text }],
+        tools: promptTools
+      };
 
       if (isStream) {
         return writeResponseStream(c, responseId, model, text, completion.usage, completion.toolCalls);

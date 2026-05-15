@@ -414,6 +414,67 @@ test('Responses endpoint returns function_call output for client-executed tools'
   }
 });
 
+test('Responses endpoint continues tool cycle with previous_response_id', async () => {
+  const originalFetch = globalThis.fetch;
+  let qwenCalls = 0;
+
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.includes('/api/v2/chat/completions')) {
+      qwenCalls++;
+      const stream = new ReadableStream({
+        start(c) {
+          const toolName = qwenCalls === 1 ? 'first_tool' : 'second_tool';
+          c.enqueue(new TextEncoder().encode(`data: {"choices": [{"delta": {"phase": "answer", "content": "<tool_call>{\\"name\\": \\"${toolName}\\", \\"arguments\\": {\\"query\\": \\"abc\\"}}</tool_call>"}}]}\n\n`));
+          c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+          c.close();
+        }
+      });
+      return new Response(stream, { status: 200 });
+    }
+    return originalFetch(input);
+  };
+
+  await initPlaywright(false);
+
+  try {
+    const first = await app.fetch(new Request('http://localhost/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3.6-plus-no-thinking',
+        input: 'Use both tools',
+        tools: [
+          { type: 'function', name: 'first_tool', parameters: { type: 'object', properties: {} } },
+          { type: 'function', name: 'second_tool', parameters: { type: 'object', properties: {} } }
+        ]
+      })
+    }));
+    const firstBody = await first.json();
+
+    const second = await app.fetch(new Request('http://localhost/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3.6-plus-no-thinking',
+        previous_response_id: firstBody.id,
+        input: [{
+          type: 'function_call_output',
+          call_id: firstBody.output[0].call_id,
+          output: 'first result'
+        }]
+      })
+    }));
+
+    const secondBody = await second.json();
+    assert.strictEqual(secondBody.output[0].type, 'function_call');
+    assert.strictEqual(secondBody.output[0].name, 'second_tool');
+  } finally {
+    globalThis.fetch = originalFetch;
+    await closePlaywright();
+  }
+});
+
 test('Responses endpoint auto-executes registered tools when enabled', async () => {
   const originalFetch = globalThis.fetch;
   let qwenCalls = 0;
