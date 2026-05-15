@@ -5,8 +5,9 @@ import { createQwenStream } from '../services/qwen.ts';
 import { registry } from '../tools/registry.ts';
 import { executeToolCalls } from '../tools/executor.ts';
 import { StreamingToolParser } from '../tools/parser.ts';
+import { normalizePromptTools, toolCallToTag, type PromptToolDefinition } from '../tools/format.ts';
 import { robustParseJSON } from '../utils/json.ts';
-import type { FunctionToolDefinition, ParsedToolCall, ToolCallResult } from '../tools/types.ts';
+import type { ParsedToolCall, ToolCallResult } from '../tools/types.ts';
 
 type ResponseInputPart = {
   type?: string;
@@ -73,18 +74,12 @@ function inputToMessages(input: unknown, instructions?: string): ResponseInputMe
   return messages;
 }
 
-function toolsInstructions(tools: FunctionToolDefinition[]): string {
+function toolsInstructions(tools: PromptToolDefinition[]): string {
   if (tools.length === 0) return '';
-
-  const formattedTools = tools.map((tool) => ({
-    name: tool.function.name,
-    description: tool.function.description || '',
-    parameters: tool.function.parameters || { type: 'object', properties: {} }
-  }));
 
   return `# TOOLS AVAILABLE
 You have access to the following tools:
-${JSON.stringify(formattedTools, null, 2)}
+${JSON.stringify(tools, null, 2)}
 
 # TOOL CALLING FORMAT (MANDATORY)
 To use a tool, output JSON wrapped exactly in these tags:
@@ -100,7 +95,7 @@ RULES:
 `;
 }
 
-function messagesToPrompt(messages: ResponseInputMessage[], tools: FunctionToolDefinition[]): string {
+function messagesToPrompt(messages: ResponseInputMessage[], tools: PromptToolDefinition[]): string {
   const sections: string[] = [];
   const toolText = toolsInstructions(tools);
 
@@ -118,10 +113,8 @@ function messagesToPrompt(messages: ResponseInputMessage[], tools: FunctionToolD
       let assistantContent = content;
       if (Array.isArray(message.tool_calls)) {
         for (const tc of message.tool_calls) {
-          const args = typeof tc.function?.arguments === 'string'
-            ? tc.function.arguments
-            : JSON.stringify(tc.function?.arguments || {});
-          assistantContent += `\n<tool_call>{"name": "${tc.function?.name}", "arguments": ${args}}</tool_call>`;
+          const tag = toolCallToTag(tc);
+          if (tag) assistantContent += `\n${tag}`;
         }
       }
       sections.push(`Assistant: ${assistantContent.trim()}`);
@@ -317,7 +310,7 @@ async function runAutoExecuteResponses(
   enableThinking: boolean
 ): Promise<{ text: string; usage: QwenCompletion['usage'] }> {
   const maxTurns = Number(process.env.AUTO_EXECUTE_MAX_TURNS || '10');
-  const tools = registry.toOpenAITools();
+  const tools = normalizePromptTools(registry.toOpenAITools());
   const usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
 
   for (let turn = 0; turn < maxTurns; turn++) {
@@ -353,7 +346,7 @@ export async function responses(c: Context) {
     const model = body.model || 'qwen3.6-plus';
     const isStream = body.stream ?? false;
     const messages = inputToMessages(body.input, body.instructions);
-    const prompt = messagesToPrompt(messages, Array.isArray(body.tools) ? body.tools : []);
+    const prompt = messagesToPrompt(messages, normalizePromptTools(body.tools));
     const enableThinking = !model.includes('no-thinking');
     const responseId = `resp_${uuidv4()}`;
     const autoExecute = isAutoExecuteEnabled(c, body);
